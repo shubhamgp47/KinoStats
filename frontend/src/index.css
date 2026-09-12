@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #09090b;
+  --color-surface: #18181b;
+  --color-surface-hover: #27272a;
+  --color-accent: #00e054; /* Letterboxd Green */
+  --color-border-zinc: #27272a;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-canvas);
+  color: #f4f4f5;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  min-height: 100vh;
+}

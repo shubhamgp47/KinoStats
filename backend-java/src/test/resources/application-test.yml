@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/kinostats
+    username: cinema
+    password: secretpassword
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+tmdb:
+  api-url: https://api.themoviedb.org/3
+  api-key: ${TMDB_API_KEY:eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NjYzMjZmYjM0YzFiZWY2NjUyM2RmZWMyMWJiNDIwNiIsIm5iZiI6MTc4NzU5MjQ0NC4xMDMwMDAyLCJzdWIiOiI2YThjN2VmY2RkMGRlMTkwMDI5ZmM1N2EiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.E3C2Dw-3QnfOR2p-oY21_uRKVR8gxCYEQPKyFSLGLAE}
