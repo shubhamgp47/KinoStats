@@ -1,5 +1,5 @@
 package com.cinestats.backend_java.dto.response;
-
+//Powers the completionist progress gauges
 public record DirectorProgressResponse(
     Long directorId,
     String directorName,

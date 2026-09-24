@@ -2,6 +2,7 @@ package com.cinestats.backend_java.service;
 
 import com.cinestats.backend_java.dto.tmdb.TmdbMovieDetails;
 import com.cinestats.backend_java.dto.tmdb.TmdbSearchResponse;
+import com.cinestats.backend_java.dto.tmdb.TmdbPersonCredits;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -62,6 +63,36 @@ public class TmdbService {
         } catch (Exception e) {
             log.error("Failed to query TMDB search for '{}' ({}): {}", title, releaseYear, e.getMessage());
             return Optional.empty();
+        } finally {
+            rateLimiter.release();
+        }
+    }
+
+    public int getDirectorFeatureFilmCount(int tmdbPersonId) {
+        try {
+            rateLimiter.acquire();
+            Thread.sleep(25);
+
+            TmdbPersonCredits credits = restClient.get()
+                .uri("/person/{id}/movie_credits", tmdbPersonId)
+                .retrieve()
+                .body(TmdbPersonCredits.class);
+
+            if (credits != null && credits.crew() != null) {
+                long count = credits.crew().stream()
+                    .filter(c -> "Directing".equalsIgnoreCase(c.department()) && "Director".equalsIgnoreCase(c.job()))
+                    .map(TmdbPersonCredits.TmdbCrewCredit::id)
+                    .distinct()
+                    .count();
+                return (int) count;
+            }
+            return 0;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 0;
+        } catch (Exception e) {
+            log.error("Failed to fetch directed count for person ID {}: {}", tmdbPersonId, e.getMessage());
+            return 0;
         } finally {
             rateLimiter.release();
         }

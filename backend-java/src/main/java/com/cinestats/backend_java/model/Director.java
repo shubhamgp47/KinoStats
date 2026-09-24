@@ -24,4 +24,7 @@ public class Director {
 
     @Column(name = "profile_path", length = 255)
     private String profilePath;
+
+    @Column(name = "total_directed")
+    private Integer totalDirected;
 }

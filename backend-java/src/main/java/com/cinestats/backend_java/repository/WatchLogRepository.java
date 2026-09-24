@@ -80,22 +80,32 @@ public interface WatchLogRepository extends JpaRepository<WatchLog, Long> {
         SELECT 
             d.id AS directorId,
             d.name AS directorName,
-            (SELECT COUNT(*) FROM movie_directors md_total WHERE md_total.director_id = d.id) AS totalDirected,
-            COUNT(DISTINCT wl.movie_id) AS watchedCount
+            LOWER(REPLACE(REPLACE(d.name, ' ', '-'), '.', '')) AS slug,
+            GREATEST(COALESCE(d.total_directed, 0), COUNT(DISTINCT wl.movie_id)) AS totalDirected,
+            COUNT(DISTINCT wl.movie_id) AS watchedCount,
+            ROUND(
+                (COUNT(DISTINCT wl.movie_id)::NUMERIC / 
+                NULLIF(GREATEST(COALESCE(d.total_directed, 0), COUNT(DISTINCT wl.movie_id)), 0)
+                ) * 100, 
+                1
+            ) AS completionPercentage
         FROM watch_logs wl
-        JOIN movie_directors md ON wl.movie_id = md.movie_id
+        JOIN movies m ON wl.movie_id = m.id
+        JOIN movie_directors md ON m.id = md.movie_id
         JOIN directors d ON md.director_id = d.id
         WHERE wl.user_id = :userId
-        GROUP BY d.id, d.name
+        GROUP BY d.id, d.name, d.total_directed
         ORDER BY watchedCount DESC
         LIMIT :limit
-    """, nativeQuery = true)
+        """, nativeQuery = true)
     List<DirectorStatProjection> getTopDirectors(@Param("userId") UUID userId, @Param("limit") int limit);
 
-    interface DirectorStatProjection {
+    public interface DirectorStatProjection {
         Long getDirectorId();
         String getDirectorName();
+        String getSlug();
         long getTotalDirected();
         long getWatchedCount();
+        Double getCompletionPercentage();
     }
 }

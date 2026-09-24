@@ -60,7 +60,7 @@ public class StatsService {
                 long total = Math.max(d.getTotalDirected(), d.getWatchedCount());
                 double percentage = total == 0 ? 0.0 : Math.round(((double) d.getWatchedCount() / total * 100.0) * 10.0) / 10.0;
                 String slug = d.getDirectorName().toLowerCase().replaceAll("[^a-z0-9]+", "-");
-                String url = "https://letterboxd.com/" + username + "/films/with/director/" + slug + "/";
+                String url = "https://letterboxd.com/" + username + "/films/with/director/" + slug + "/"; // Construct the Letterboxd URL for the director's films
 
                 return new DirectorProgressResponse(
                     d.getDirectorId(),

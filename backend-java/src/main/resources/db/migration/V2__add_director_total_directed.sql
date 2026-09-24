@@ -1,0 +1,1 @@
+ALTER TABLE directors ADD COLUMN total_directed INT DEFAULT 0;

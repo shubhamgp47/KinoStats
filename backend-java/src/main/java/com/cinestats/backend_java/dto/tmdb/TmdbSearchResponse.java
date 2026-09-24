@@ -6,7 +6,7 @@ import java.util.List;
 public record TmdbSearchResponse(
     int page,
     List<TmdbMovieResult> results,
-    @JsonProperty("total_results") int totalResults
+    @JsonProperty("total_results") int totalResults // Bridges external TMDB snake_case keys directly to idiomatic Java camelCase fields.
 ) {
     public record TmdbMovieResult(
         int id,

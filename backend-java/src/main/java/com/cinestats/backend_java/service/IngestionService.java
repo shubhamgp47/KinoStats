@@ -10,10 +10,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
-import java.math.BigDecimal;
 
 @Service
 public class IngestionService {
@@ -26,6 +26,10 @@ public class IngestionService {
     private final GenreRepository genreRepository;
     private final DirectorRepository directorRepository;
     private final TmdbService tmdbService;
+
+    // Concurrent caches to prevent duplicate DB calls & race condition collisions
+    private final Map<Integer, Director> directorCache = new ConcurrentHashMap<>();
+    private final Map<Integer, Genre> genreCache = new ConcurrentHashMap<>();
 
     public IngestionService(
             UserRepository userRepository,
@@ -43,8 +47,10 @@ public class IngestionService {
     }
 
     public ImportResponse processImport(LetterboxdImportRequest request, String sessionToken) {
-        User user = resolveOrCreateUser(request.username(), sessionToken);
+        log.info("Starting Letterboxd import for user: '{}' with {} total entries", 
+                request.username(), request.entries().size());
 
+        User user = resolveOrCreateUser(request.username(), sessionToken);
         List<LetterboxdImportRequest.DiaryEntry> entries = request.entries();
         int totalReceived = entries.size();
         int matchedInCache = 0;
@@ -53,11 +59,10 @@ public class IngestionService {
         List<LetterboxdImportRequest.DiaryEntry> cacheMisses = new ArrayList<>();
         Map<String, Movie> resolvedMovies = new ConcurrentHashMap<>();
 
-        // Step 1: Query Local Postgres Cache
+        // Step 1: Local Postgres Cache Check
         for (LetterboxdImportRequest.DiaryEntry entry : entries) {
             String cacheKey = (entry.title() + "_" + entry.releaseYear()).toLowerCase();
             Optional<Movie> cached = movieRepository.findByTitleIgnoreCaseAndReleaseYear(entry.title(), entry.releaseYear());
-
             if (cached.isPresent()) {
                 matchedInCache++;
                 resolvedMovies.put(cacheKey, cached.get());
@@ -66,13 +71,19 @@ public class IngestionService {
             }
         }
 
-        // Step 2: Concurrently Resolve Cache Misses via TMDB using Java 21 Virtual Threads
+        log.info("Local Cache Lookup Complete: {} hits, {} misses to fetch from TMDB", 
+                matchedInCache, cacheMisses.size());
+
+        // Step 2: TMDB Resolution for misses
         if (!cacheMisses.isEmpty()) {
+            log.info("Resolving {} cache misses concurrently via Virtual Threads...", cacheMisses.size());
             enrichedCount = resolveMissesConcurrently(cacheMisses, resolvedMovies);
         }
 
-        // Step 3: Persist Watch Logs for resolved movies
+        // Step 3: Watch Logs Persistence
+        log.info("Persisting watch logs for {} resolved movies...", resolvedMovies.size());
         persistWatchLogs(user, entries, resolvedMovies);
+        log.info("Watch logs successfully persisted for user '{}'", user.getLetterboxdUsername());
 
         return new ImportResponse(
                 totalReceived,
@@ -92,7 +103,6 @@ public class IngestionService {
                 return userRepository.save(u);
             }
         }
-
         return userRepository.findByLetterboxdUsername(username)
                 .orElseGet(() -> userRepository.save(
                         User.builder()
@@ -108,12 +118,13 @@ public class IngestionService {
             List<LetterboxdImportRequest.DiaryEntry> misses,
             Map<String, Movie> resolvedMovies) {
 
-        // Use Java 21 Virtual Thread Per Task Executor
+        java.util.concurrent.atomic.AtomicInteger completed = new java.util.concurrent.atomic.AtomicInteger(0);
+        int total = misses.size();
+
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Callable<Void>> tasks = misses.stream().map(entry -> (Callable<Void>) () -> {
                 String cacheKey = (entry.title() + "_" + entry.releaseYear()).toLowerCase();
-                
-                // Avoid redundant TMDB calls if duplicate movies exist in the same import file
+
                 if (resolvedMovies.containsKey(cacheKey)) {
                     return null;
                 }
@@ -122,11 +133,18 @@ public class IngestionService {
                     Optional<TmdbMovieDetails> detailsOpt = tmdbService.getMovieDetails(searchResult.id());
                     if (detailsOpt.isPresent()) {
                         Movie savedMovie = persistEnrichedMovie(detailsOpt.get(), entry.releaseYear());
-                        resolvedMovies.put(cacheKey, savedMovie);
+                        if (savedMovie != null) {
+                            resolvedMovies.put(cacheKey, savedMovie);
+                        }
                     } else {
                         log.warn("Could not fetch TMDB details for '{}' (ID: {})", entry.title(), searchResult.id());
                     }
                 });
+
+                int current = completed.incrementAndGet();
+                if (current % 25 == 0 || current == total) {
+                    log.info("Ingestion Progress: [{}/{}] movies resolved from TMDB", current, total);
+                }
                 return null;
             }).toList();
 
@@ -149,13 +167,15 @@ public class IngestionService {
         Set<Genre> genres = new HashSet<>();
         if (details.genres() != null) {
             for (var g : details.genres()) {
-                Genre genre = genreRepository.findByTmdbGenreId(g.id())
+                Genre genre = genreCache.computeIfAbsent(g.id(), genreId ->
+                    genreRepository.findByTmdbGenreId(genreId)
                         .orElseGet(() -> genreRepository.save(
-                                Genre.builder()
-                                        .tmdbGenreId(g.id())
-                                        .name(g.name())
-                                        .build()
-                        ));
+                            Genre.builder()
+                                .tmdbGenreId(g.id())
+                                .name(g.name())
+                                .build()
+                        ))
+                );
                 genres.add(genre);
             }
         }
@@ -165,14 +185,21 @@ public class IngestionService {
             details.credits().crew().stream()
                     .filter(c -> "Director".equalsIgnoreCase(c.job()))
                     .forEach(c -> {
-                        Director director = directorRepository.findByTmdbPersonId(c.id())
-                                .orElseGet(() -> directorRepository.save(
+                        Director director = directorCache.computeIfAbsent(c.id(), personId ->
+                            directorRepository.findByTmdbPersonId(personId)
+                                .orElseGet(() -> {
+                                    log.info("Fetching canon film count for director: {} (ID: {})", c.name(), c.id());
+                                    int totalCanon = tmdbService.getDirectorFeatureFilmCount(c.id());
+                                    return directorRepository.save(
                                         Director.builder()
                                                 .tmdbPersonId(c.id())
                                                 .name(c.name())
                                                 .profilePath(c.profilePath())
+                                                .totalDirected(totalCanon > 0 ? totalCanon : 1)
                                                 .build()
-                                ));
+                                    );
+                                })
+                        );
                         directors.add(director);
                     });
         }
@@ -189,7 +216,12 @@ public class IngestionService {
                 .directors(directors)
                 .build();
 
-        return movieRepository.save(movie);
+        try {
+            return movieRepository.save(movie);
+        } catch (Exception e) {
+            // If another virtual thread already saved this exact movie, return the cached record
+            return movieRepository.findByTmdbId(details.id()).orElse(null);
+        }
     }
 
     private void persistWatchLogs(
@@ -198,7 +230,6 @@ public class IngestionService {
             Map<String, Movie> resolvedMovies) {
 
         List<WatchLog> batchToSave = new ArrayList<>();
-        // In-memory set to prevent duplicate entries inside the current batch
         Set<String> processedKeysInBatch = new HashSet<>();
 
         for (var entry : entries) {
@@ -206,15 +237,12 @@ public class IngestionService {
             Movie movie = resolvedMovies.get(cacheKey);
 
             if (movie != null) {
-                // Compound deduplication key: movie_id + watched_date
                 String uniqueWatchKey = movie.getId() + "_" + entry.watchedDate();
 
-                // 1. Skip if duplicate exists inside this incoming batch
                 if (processedKeysInBatch.contains(uniqueWatchKey)) {
                     continue;
                 }
 
-                // 2. Skip if duplicate already exists committed in PostgreSQL
                 boolean alreadyLogged = watchLogRepository.existsByUserIdAndMovieIdAndWatchedDate(
                         user.getId(), movie.getId(), entry.watchedDate());
 
